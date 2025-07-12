@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ECharts 3D 等单位长度示例</title>
+  <!-- 引入 ECharts 主库 -->
+  <script src="https://fastly.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <!-- 引入 ECharts GL 库（3D） -->
+  <script src="https://fastly.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
+  <!-- 由于示例中用到了 jQuery 的 $.getScript，故亦可引入 jQuery -->
+  <script src="https://fastly.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
+</head>
+<body style="margin:0;padding:0;">
+<div id="main" style="width: 100%; height: 100vh;"></div>
+
+<script>
+  // 1. 初始化 ECharts 实例
+  var myChart = echarts.init(document.getElementById('main'));
+
+  // 2. 通过 getScript 动态加载 SimplexNoise 库 (如不需要也可不加载)
+  $.getScript(
+    'https://fastly.jsdelivr.net/npm/simplex-noise@2.4.0/simplex-noise.js'
+  ).done(function () {
+    // 进入 .done(...) 回调函数后，表示脚本加载已完成
+
+    // -------------------------------
+    // A. 初始化记录“磨损量”的全局最小值和最大值
+    // -------------------------------
+    var valMin = Infinity; // 初始化最小值为正无穷
+    var valMax = -Infinity; // 初始化最大值为负无穷
+
+    // -------------------------------
+    // B. 定义一个函数 generateStairData()
+    //    来计算“原始楼梯磨损数据”
+    // -------------------------------
+    function generateStairData() {
+      // B1. 设定一些楼梯使用参数 (可根据实际需要调整)
+      var T = 100;       // 楼梯使用年限(年)
+      var N_day = 260;   // 每日通行人数
+      var G = 2000;      // 平均接触压力(N)
+      var k = 1.8e-7;    // 材料磨损系数
+      var d = 0.8e-3;    // 步伐滑动距离(米)
+      var H = 1.75e6;    // 材料硬度
+
+      // B2. 计算磨损系数 k_m
+      var k_m = k * d / H;
+
+      // B3. 楼梯踏面 x方向 0~1米, y方向 0~0.2米
+      var xLength = 1;   // x方向长度（米）
+      var yLength = 0.2; // y方向宽度（米）
+      var gridX = 50;    // x方向网格数
+      var gridY = 50;    // y方向网格数
+
+      // B4. 定义网格步长
+      var dx = xLength / gridX;
+      var dy = yLength / gridY;
+
+      // B5. 用一个数组 dataOriginal 存放原始的 [x, y, d_ij] 数据
+      var dataOriginal = [];
+
+      // B6. 遍历 x, y 范围
+      for (var i = 0; i <= gridX; i++) {
+        for (var j = 0; j <= gridY; j++) {
+          var x = i * dx; // 当前x坐标
+          var y = j * dy; // 当前y坐标
+
+          // B6.1. 计算位置权重因子 D_ij
+          var D_ij;
+          if (y >= 0 && y <= 0.15) {
+            // 一维正态分布 N(0.5, 1)，仅作示例
+            var mean = 0.5;
+            var sigma = 0.2;
+            D_ij = (1 / (sigma * Math.sqrt(2 * Math.PI))) * Math.exp(
+              -Math.pow((x - mean), 2) / (2 * Math.pow(sigma, 2))
+            );
+          } else {
+            // 超出范围(>0.15~0.2时) 置0
+            D_ij = 0;
+          }
+
+          // B6.2. 计算楼梯磨损量 d_ij = T * N_day * G * D_ij * k_m
+          var d_ij = T * N_day * G * D_ij * k_m;
+
+          // B6.3. 更新全局最小值和最大值
+          if (d_ij < valMin) {
+            valMin = d_ij;
+          }
+          if (d_ij > valMax) {
+            valMax = d_ij;
+          }
+
+          // B6.4. 将计算结果 [x, y, d_ij] 存入 dataOriginal
+          dataOriginal.push([x, y, d_ij]);
+        }
+      }
+      return dataOriginal;
+    }
+
+    // C. 调用 generateStairData() 并打印原始最小值和最大值
+    var dataOriginal = generateStairData();
+    console.log('Original valMin: ' + valMin, 'valMax: ' + valMax);
+
+    // -------------------------------
+    // D. “反转”操作
+    //    将 d_ij -> d_inverted = valMax - d_ij
+    //    并加上 step_height=0.001 的偏移，保证数据不为负
+    // -------------------------------
+    var dataInverted = [];
+    var newMin = Infinity;
+    var newMax = -Infinity;
+    var step_height = 0.001;
+
+    for (var kidx = 0; kidx < dataOriginal.length; kidx++) {
+      var x = dataOriginal[kidx][0];
+      var y = dataOriginal[kidx][1];
+      // 加上 step_height，避免出现负值 => dVal
+      var dVal = dataOriginal[kidx][2] + step_height;
+
+      // 反转运算
+      var dInv = valMax - dVal;
+
+      if (dInv < newMin) newMin = dInv;
+      if (dInv > newMax) newMax = dInv;
+
+      dataInverted.push([x, y, dInv]);
+    }
+    console.log('Inverted newMin: ' + newMin, 'newMax: ' + newMax);
+
+    // ---------------------------------------------------
+    // E. 重点：方法二 —— 保留原数据范围，手动设置 box 宽深高
+    //    实现“x,y,z 方向单位长度一致”
+    //
+    //   x 原区间约 [0,1]
+    //   y 原区间约 [0,0.2]
+    //   zAxis3D(手动定) [ -0.001, 0 ] (共 0.001)
+    //
+    //   => 三者比值 = 1 : 0.2 : 0.001
+    //   => 设置 boxWidth:boxDepth:boxHeight = 1000 : 200 : 1 (倍数 k=1000)
+    // ---------------------------------------------------
+    var deltaX = 1.0;    // x 范围 1
+    var deltaY = 0.2;    // y 范围 0.2
+    var deltaZ = 0.001;  // z 范围 (从-0.001到0), 总长 = 0.001
+    var kScale = 1000;   // 选定缩放系数
+
+    var boxWidthValue  = deltaX * kScale;  // => 1000
+    var boxDepthValue  = deltaY * kScale;  // => 200
+    var boxHeightValue = deltaZ * kScale;  // => 1
+
+    // F. 使用 ECharts 3D bar3D 来可视化“反转后的”数据 dataInverted
+    myChart.setOption({
+      visualMap: {
+        show: false,       // 不显示可交互的 visualMap 面板
+        min: newMin,       // 使用反转后数据的最小值
+        max: newMax,       // 以及最大值
+        inRange: {
+          // 颜色渐变序列，可根据需要自行修改
+          color: [
+            '#ffffcc',
+            '#ffff99',
+            '#ffff66',
+            '#ffff33',
+            '#ffff00',
+            '#ffcc00',
+            '#ff9900',
+            '#ff6600',
+            '#ff3300'
+          ]
+        }
+      },
+      xAxis3D: {
+        type: 'value',
+        name: 'X',     // X 轴标签
+        min: 0,        // 与原始数据保持一致 [0,1]
+        max: 1
+      },
+      yAxis3D: {
+        type: 'value',
+        name: 'Y',     // Y 轴标签
+        min: 0,        // 与原始数据保持一致 [0,0.2]
+        max: 0.2
+      },
+      zAxis3D: {
+        type: 'value',
+        name: 'd_inverted',
+        // 此处根据您之前的写法，将 z 范围锁定为 [ -step_height, 0 ]
+        min: -step_height,
+        max: 0
+      },
+      // G. 这里是关键：将 grid3D 的长宽高按照 “x:y:z = 1 : 0.2 : 0.001” 设置
+      grid3D: {
+        boxWidth:  boxWidthValue,   // => 1000
+        boxDepth:  boxDepthValue,   // => 200
+        boxHeight: boxHeightValue,  // => 1
+
+        axisLine: {
+          lineStyle: { color: '#fff' }
+        },
+        axisPointer: {
+          lineStyle: { color: '#fff' }
+        },
+        viewControl: {
+          // autoRotate: true, // 是否自动旋转（可自行打开）
+        },
+        light: {
+          main: {
+            shadow: true,
+            quality: 'ultra',
+            intensity: 1.5
+          }
+        }
+      },
+      series: [
+        {
+          type: 'bar3D',
+          data: dataInverted,   // 使用“反转”后的数据
+          shading: 'lambert',   // 使用 lambert 光照模型
+          label: {
+            // 显示标签时, 可格式化数值
+            formatter: function (param) {
+              return param.value[2].toFixed(4);
+            }
+          },
+          // barSize 决定柱子的粗细（在 x,y 平面上的占比）
+          barSize: 1
+        }
+      ]
+    });
+  });
+</script>
+</body>
+</html>
